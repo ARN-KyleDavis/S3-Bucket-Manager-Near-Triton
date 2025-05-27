@@ -1,0 +1,93 @@
+{
+	"info": {
+		"_postman_id": "9d426b60-950e-474d-a3b5-e4c920d9f96c",
+		"name": "Bucket Tester",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "24548521"
+	},
+	"item": [
+		{
+			"name": "Get Files",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{Host}}/list-bucket?bucket-name=arn-triton-prod",
+					"host": [
+						"{{Host}}"
+					],
+					"path": [
+						"list-bucket"
+					],
+					"query": [
+						{
+							"key": "bucket-name",
+							"value": "arn-triton-prod"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Object",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{Host}}/get-object?bucket-name=arn-triton-prod&object-key=near/20240207/segments/full.20240207.001.ip.tsv.gz",
+					"host": [
+						"{{Host}}"
+					],
+					"path": [
+						"get-object"
+					],
+					"query": [
+						{
+							"key": "bucket-name",
+							"value": "arn-triton-prod"
+						},
+						{
+							"key": "object-key",
+							"value": "near/20240207/segments/full.20240207.001.ip.tsv.gz"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Local Upload to Folder",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "filename",
+							"value": "near_20240207_taxonomy_20240207.001.taxonomy.tsv.gz",
+							"type": "text"
+						},
+						{
+							"key": "folder_name",
+							"value": "taxonomy",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{Host}}//local-upload-to-folder",
+					"host": [
+						"{{Host}}"
+					],
+					"path": [
+						"",
+						"local-upload-to-folder"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
