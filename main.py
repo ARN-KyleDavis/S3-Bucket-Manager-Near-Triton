@@ -7,6 +7,7 @@ import pandas as pd
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import psycopg2
+import re
 
 
 app = Flask(__name__)
@@ -371,45 +372,57 @@ def upload_latest_to_s3():
         return jsonify({'error': f'Failed to upload {original_filename} to S3: {str(e)}'}), 500
 
 
-@app.route('/local-upload-to-folder', methods=['POST']) 
+@app.route('/local-upload-to-folder', methods=['POST'])
 def local_upload_to_folder():
     """
-    Route to upload a local file from 'uploads' directory to an S3 folder.
-    Accepts 'filename' and 'folder_name' as POST parameters.
+    Route to upload a local file from the 'uploads' directory to a specific S3 folder.
+    Validates the filename based on the folder_name and constructs the S3 path accordingly.
     """
-    # Parse parameters
     filename = request.form.get('filename')
     folder_name = request.form.get('folder_name')
+
     if not filename or not folder_name:
         return jsonify({'error': 'Both filename and folder_name are required'}), 400
 
-    # Construct local file path
+    date_str = None
+    
+    # --- Validation and Date Extraction ---
+    if folder_name == 'segments':
+        # Pattern: {"full" or "inc"}.{YYYYMMDD}.{NNN}.ip.tsv.gz
+        match = re.match(r'^(full|inc)\.(\d{8})\.\d{3}\.ip\.tsv\.gz$', filename)
+        if not match:
+            return jsonify({
+                'error': 'Invalid filename for "segments" folder.',
+                'message': 'Filename must follow the format: {"full" or "inc"}.{YYYYMMDD}.{NNN}.ip.tsv.gz'
+            }), 400
+        date_str = match.group(2) # The second capture group is the 8-digit date
+    elif folder_name == 'taxonomy':
+        # Pattern: {YYYYMMDD}.{NNN}.taxonomy.tsv.gz
+        match = re.match(r'^(\d{8})\.\d{3}\.taxonomy\.tsv\.gz$', filename)
+        if not match:
+            return jsonify({
+                'error': 'Invalid filename for "taxonomy" folder.',
+                'message': 'Filename must follow the format: {YYYYMMDD}.{NNN}.taxonomy.tsv.gz'
+            }), 400
+        date_str = match.group(1) # The first capture group is the 8-digit date
+    else:
+        return jsonify({'error': f'Invalid folder_name: "{folder_name}". Must be "segments" or "taxonomy".'}), 400
+
+    # --- File Existence Check ---
     uploads_dir = os.path.join(os.getcwd(), 'uploads')
     local_file_path = os.path.join(uploads_dir, secure_filename(filename))
 
-    # Check if file exists
     if not os.path.isfile(local_file_path):
-        return jsonify({'error': f'File {filename} not found in uploads folder'}), 404
+        return jsonify({'error': f'File {secure_filename(filename)} not found in uploads folder'}), 404
 
-    # S3 setup: Use TRITON credentials
+    # --- S3 Upload Logic ---
     triton_access_key = os.getenv('TRITON_ACCESS_KEY')
     triton_secret_key = os.getenv('TRITON_SECRET_ACCESS_KEY')
     s3_bucket = 'triton-dmp-integrations'
 
-    # Extract date from the filename (handling "inc." prefix if present)
-    try:
-        parts = filename.split('.')
-        if parts[0] == 'inc':
-            date_str = parts[1]  # Extract the YYYYMMDD part after "inc."
-        else:
-            date_str = parts[0]  # Extract the YYYYMMDD part directly
-    except IndexError:
-        return jsonify({'error': 'Invalid filename format. Expected inc.YYYYMMDD or YYYYMMDD.XXX.taxonomy.tsv.gz'}), 400
+    # Construct the correct S3 key
+    s3_key = f'prod/near/41793/{folder_name}/{date_str}/{secure_filename(filename)}'
 
-    # Generate S3 folder path
-    s3_key = f'prod/near/41793/{folder_name}/{date_str}/{filename}'
-
-    # Upload to S3
     try:
         s3 = boto3.client(
             's3',
@@ -419,7 +432,15 @@ def local_upload_to_folder():
         )
         print(f"Uploading {local_file_path} to s3://{s3_bucket}/{s3_key}")
         s3.upload_file(local_file_path, s3_bucket, s3_key)
-        return jsonify({'message': f'File {filename} uploaded successfully to s3://{s3_bucket}/{s3_key}'})
+        
+        # Provide positive and accurate feedback
+        return jsonify({
+            'message': 'File uploaded successfully.',
+            'details': {
+                'filename': filename,
+                's3_path': f's3://{s3_bucket}/{s3_key}'
+            }
+        })
     except Exception as e:
         return jsonify({'error': f'Failed to upload file to S3: {str(e)}'}), 500
 
@@ -567,6 +588,49 @@ def validate_taxonomy():
 
     # Return the results as a JSON response
     return jsonify(results)
+
+@app.route('/get-triton-files', methods=['GET'])
+def get_triton_files():
+    """
+    List files in the Triton S3 bucket using TRITON credentials.
+    Returns a JSON list of files with key, size, and last modified date.
+    """
+    bucket_name = 'triton-dmp-integrations'
+    prefix = ''  # Optionally allow filtering by prefix in the future
+
+    triton_access_key = os.getenv('TRITON_ACCESS_KEY')
+    triton_secret_key = os.getenv('TRITON_SECRET_ACCESS_KEY')
+
+    if not triton_access_key or not triton_secret_key:
+        return jsonify({'error': 'Triton credentials are not set in environment variables'}), 500
+
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=triton_access_key,
+        aws_secret_access_key=triton_secret_key,
+        region_name='ap-southeast-2'
+    )
+
+    try:
+        paginator = s3.get_paginator('list_objects_v2')
+        page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+
+        files = []
+        for page in page_iterator:
+            if 'Contents' in page:
+                for item in page['Contents']:
+                    files.append({
+                        'Key': item['Key'],
+                        'Size': convert_size(item['Size']),
+                        'LastModified': item['LastModified'].strftime('%Y-%m-%d %H:%M:%S')
+                    })
+
+        total_files = len(files)
+        total_size = sum([item['Size'] if isinstance(item['Size'], int) else 0 for item in page['Contents']]) if files else 0
+
+        return jsonify({'files': files, 'total_files': total_files})
+    except Exception as e:
+        return jsonify({'error': f'Failed to list files in Triton bucket: {str(e)}'}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
